@@ -201,6 +201,58 @@ class NotifyFeishuRefTest(unittest.TestCase):
         workflow = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
         self.assertEqual(workflow["run-name"], "ops-test_${{ inputs.repo }}")
 
+    def test_workflow_appends_time_suffix_to_date_for_result_paths(self):
+        workflow = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
+        prepare = workflow["jobs"]["prepare"]
+        get_date = next(
+            step for step in prepare["steps"] if step.get("id") == "get-date"
+        )
+
+        self.assertEqual(
+            prepare["outputs"]["date"], "${{ steps.get-date.outputs.DATE }}"
+        )
+        self.assertEqual(
+            prepare["outputs"]["time_suffix"],
+            "${{ steps.get-date.outputs.TIME_SUFFIX }}",
+        )
+        self.assertIn(
+            'echo "DATE=${TEST_DATE_INPUT:-$(date \'+%Y-%m-%d\')}" >> "$GITHUB_OUTPUT"',
+            get_date["run"],
+        )
+        self.assertIn(
+            'echo "TIME_SUFFIX=$(date \'+_%H%M%S\')" >> "$GITHUB_OUTPUT"',
+            get_date["run"],
+        )
+
+        job = workflow["jobs"]["test-container"]
+        self.assertEqual(job["env"]["DATE"], "${{ needs.prepare.outputs.date }}")
+        self.assertEqual(
+            job["env"]["TIME_SUFFIX"], "${{ needs.prepare.outputs.time_suffix }}"
+        )
+        self.assertEqual(
+            job["env"]["OUTPUT_DIR"],
+            "${{ matrix.output_base_dir }}/${{ needs.prepare.outputs.library_name }}"
+            "/${{ needs.prepare.outputs.date }}${{ needs.prepare.outputs.time_suffix }}"
+            "/logs_results_${{ needs.prepare.outputs.date }}"
+            "${{ needs.prepare.outputs.time_suffix }}",
+        )
+
+        package = next(
+            step for step in job["steps"] if step.get("name") == "Package results"
+        )
+        self.assertIn(
+            "${REPOSITORY_NAME}-${{ matrix.name }}-${DATE}${TIME_SUFFIX}.tar.gz",
+            package["run"],
+        )
+
+        publish = next(
+            step
+            for step in job["steps"]
+            if step.get("name") == "Publish results to op-monitor"
+        )
+        self.assertIn('-F "test_date=${DATE}"', publish["run"])
+        self.assertNotIn('-F "test_date=${DATE}${TIME_SUFFIX}"', publish["run"])
+
     def test_workflow_logs_effective_test_context_and_commands(self):
         workflow = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
         job = workflow["jobs"]["test-container"]
