@@ -147,10 +147,7 @@ class NotifyFeishuRefTest(unittest.TestCase):
         self.assertIn(
             "Empty = exclude none", dispatch_inputs["exclude_ops"]["description"]
         )
-        self.assertIn("flagtree_version", dispatch_inputs)
-        self.assertEqual(dispatch_inputs["flagtree_version"]["default"], "")
-        self.assertIn("YYYYMMDD", dispatch_inputs["flagtree_version"]["description"])
-        self.assertIn("fall back", dispatch_inputs["flagtree_version"]["description"])
+        self.assertNotIn("flagtree_version", dispatch_inputs)
         prepare_steps = workflow["jobs"]["prepare"]["steps"]
         build_matrix = next(
             step for step in prepare_steps if step.get("id") == "build-matrix"
@@ -163,6 +160,7 @@ class NotifyFeishuRefTest(unittest.TestCase):
             build_matrix["env"]["EXCLUDE_OPS_INPUT"],
             "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.exclude_ops || '' }}",
         )
+        self.assertNotIn("FLAGTREE_VERSION_INPUT", build_matrix["env"])
         self.assertIn(
             "checkout_ref = os.environ.get('REF_INPUT', '').strip() "
             "or rc['default_branch']",
@@ -327,8 +325,10 @@ class NotifyFeishuRefTest(unittest.TestCase):
             for step in steps
             if step.get("name") == "Install target repository and dependencies"
         )
-        upgrade_flagtree = next(
-            step for step in steps if step.get("name") == "Upgrade Flagtree"
+        upgrade_packages = next(
+            step
+            for step in steps
+            if step.get("name") == "Upgrade configured packages (FlagTree, FlagGems)"
         )
         gpu_check = next(
             step for step in steps if step.get("name") == "Check GPU availability"
@@ -367,21 +367,21 @@ class NotifyFeishuRefTest(unittest.TestCase):
             install_optest["run"],
         )
         self.assertIn(
-            '"${ACTIVE_PYTHON}" -m pip install uv',
+            "UV_MIN_VERSION=0.11.30",
             install_optest["run"],
         )
-        self.assertNotIn("pip install --upgrade uv", install_optest["run"])
+        self.assertIn("uv pip show --help", install_optest["run"])
+        self.assertIn('uv self update "${UV_MIN_VERSION}"', install_optest["run"])
+        self.assertIn(
+            '"${ACTIVE_PYTHON}" -m pip install --upgrade "uv>=${UV_MIN_VERSION}"',
+            install_optest["run"],
+        )
         self.assertIn("FLAGOS_GPU_VENDOR", gpu_check["run"])
         self.assertIn("FLAGOS_GPU_DRIVER", gpu_check["run"])
         self.assertIn("FLAGOS_GPU_RUNTIME", gpu_check["run"])
         self.assertIn("FLAGOS_GPU_RUNTIME_VERSION", gpu_check["run"])
-        self.assertIn("Detected explicit backend dependencies", install_target["run"])
         self.assertIn("run_uv_with_index_fallback", install_target["run"])
         self.assertIn("env -u UV_INDEX", install_target["run"])
-        self.assertIn(
-            'uv pip install --python "${ACTIVE_PYTHON}" "${EXTRA_DEPS_ARGS[@]}"',
-            install_target["run"],
-        )
         self.assertIn("Detected test extra", install_target["run"])
         self.assertIn("Detected vendor extra", install_target["run"])
         self.assertIn("[tool.uv].exclude-dependencies", install_target["run"])
@@ -394,7 +394,11 @@ class NotifyFeishuRefTest(unittest.TestCase):
         # All three install steps emit the package-cache debug report so runs make
         # the cold/warm cache behavior and the resolved cache environment
         # obvious in the logs.
-        for cache_step in (install_optest, upgrade_flagtree, install_target):
+        for cache_step in (
+            install_optest,
+            upgrade_packages,
+            install_target,
+        ):
             self.assertIn("print_cache_debug()", cache_step["run"])
             self.assertIn("[Cache debug] UV_CACHE_DIR=", cache_step["run"])
             self.assertIn("[Cache debug] PIP_CACHE_DIR=", cache_step["run"])

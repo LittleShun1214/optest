@@ -61,12 +61,16 @@ container_options: >-
   --ulimit=stack=67108864
   --workdir=/root
 
-# Backend-specific FlagTree daily wheel. The workflow uses this full version
-# unless workflow_dispatch supplies a full version or YYYYMMDD override.
-flagtree:
-  package_name: flagtree-ppu
-  version: 0.7.1.dev20261115
-  index_url: https://resource.flagos.net/repository/flagos-pypi-daily/simple
+# Backend-specific FlagTree daily wheel. This backend mapping is the workflow's
+# sole source for the exact package version and index.
+deps:
+  flagtree-ppu:
+    display_name: FlagTree
+    priority: 100
+    version: 0.7.1.dev20261115
+    index_url: https://resource.flagos.net/repository/flagos-pypi-daily/simple
+    no_deps: true
+    target: /opt/flagtree
 
 # Output base directory; ops-test appends the GitHub repository name
 output_base_dir: /home/github-outputs

@@ -27,6 +27,7 @@ result-labeling, web-data conversion, and vendor-specific GPU checking toolsuite
   - [Configure test and vendor extras](#configure-test-and-vendor-extras)
   - [Centralized workflow behavior](#centralized-workflow-behavior)
   - [FlagTree upgrade](#flagtree-upgrade)
+  - [FlagGems upgrade](#flaggems-upgrade)
   - [Persistent package cache](#persistent-package-cache)
 - [Repository layout](#repository-layout)
   - [Repository configuration](#repository-configuration)
@@ -716,22 +717,43 @@ replace packages such as numpy. Target-specific package names and exclusion
 policy therefore stay in the target repository's `pyproject.toml`, not in
 `repos.yaml` or the workflow.
 
+The target repository owns its application and test dependency contract:
+
+- Put dependencies required on every backend in `[project].dependencies`.
+- Put shared test-only dependencies in `[project.optional-dependencies].test`.
+- Put backend/vendor-specific dependencies in the optional group named after
+  the normalized vendor, such as `nvidia`, `ascend`, or `kunlunxin`.
+- Use `[tool.uv].exclude-dependencies` only when the runtime image or the
+  configured shared environment intentionally supplies a compatible build that
+  uv must leave untouched.
+
+Do not add a dependency to optest's central `deps` map merely because one
+target repository needs it. Central `deps` exists for packages that prepare the
+shared test environment, are used by multiple target repositories, or require
+hardware/repository exceptions that cannot live in a target project. Keeping
+project-owned requirements in the target `pyproject.toml` makes local installs
+and CI resolve the same environment.
+
 ### FlagTree upgrade
 
-After installing `optest` and before probing GPUs, the workflow replaces the
-image-provided FlagTree source tree with the backend-specific configured wheel.
-A backend opts in with a `flagtree` block in its shared hardware configuration:
+After installing `optest` and before probing GPUs, the generic package-upgrade
+step replaces the image-provided FlagTree source tree with the backend-specific
+configured wheel. A backend declares the distribution under `deps`, using the
+package name as the mapping key:
 
 ```yaml
 # .github/configs/backends/H800.yaml
-flagtree:
-  package_name: flagtree-nvidia
-  version: 0.7.1.dev20261115
-  index_url: https://resource.flagos.net/repository/flagos-pypi-daily/simple
+deps:
+  flagtree-nvidia:
+    display_name: FlagTree
+    priority: 100
+    version: 0.7.1.dev20261115
+    index_url: https://resource.flagos.net/repository/flagos-pypi-daily/simple
+    no_deps: true
+    target: /opt/flagtree
 ```
 
-All three fields are required together. Most backends use a complete daily
-version. This matters for runtimes with a different version base; for example,
+Most backends use a complete daily version. This matters for runtimes with a different version base; for example,
 the CANN 9.0.0 distribution uses `0.7.0.devYYYYMMDD`, while most other daily
 distributions use `0.7.1.devYYYYMMDD`.
 
@@ -739,26 +761,14 @@ BW1000 uses `flagtree-hcu==0.7.1.dev20261104` from the FlagOS daily index. Its
 backend YAML retains the previous compatible `flagtree==0.7.1a1+hcu3.6`
 release mapping as a commented fallback.
 
-The optional `flagtree_version` workflow-dispatch input requests an override in
-one of these forms:
+The backend YAML is the sole source of the FlagTree version. Updating a wheel
+therefore requires changing that backend's exact `version` and confirming that
+the artifact exists at its configured `index_url`. The workflow-dispatch form
+does not expose a runtime FlagTree version override, and the prepare job does
+not query package indexes.
 
-- A complete daily or release version, such as `0.7.1.dev20261015` or
-  `0.7.1a1+hcu3.6`, is checked unchanged for every selected backend.
-- An eight-digit date such as `20261015` keeps each backend's configured
-  version base. The same run therefore resolves H800 to
-  `0.7.1.dev20261015` and 910B to `0.7.0.dev20261015`.
-
-Before adding an override to the matrix, the prepare job checks the backend's
-own `package_name` and `index_url`. If that exact version does not exist, or the
-index cannot be queried, the job emits a `FlagTree version fallback` warning
-and keeps that backend's YAML default. Other backends independently use the
-override when their package contains it, so one missing vendor build does not
-fail the whole run. A date cannot be expanded from a fixed release default; in
-that case the backend warns and keeps its release pin. An empty input uses
-every backend default without querying the indexes.
-
-The `Upgrade Flagtree` step runs only when the selected backend has this block.
-It installs the exact vendor wheel with `uv pip install --no-deps --target
+The `Upgrade configured packages (FlagTree, FlagGems)` step installs the exact
+vendor wheel with `uv pip install --no-deps --target
 /opt/flagtree.new` and only after installation succeeds removes the old
 `/opt/flagtree` and moves the staged directory into its place. A failed
 resolution or installation therefore leaves the original tree intact. The
@@ -772,23 +782,21 @@ later Python and pytest commands use the replacement. Finally, `ACTIVE_PYTHON`
 must resolve the configured distribution to the exact requested version; this
 avoids treating a bare `pip show`, which cannot see an unactivated target
 directory, as an installation check.
-Backends with no `flagtree` block skip the step and retain the image-provided
+Backends with no FlagTree entry under `deps` retain the image-provided
 tree; this currently applies only to Cambricon.
 
-A target repository can opt out without changing the shared backend defaults:
+A target repository disables an inherited package in its most-specific
+dependency layer:
 
 ```yaml
 repos:
-  KeepImageFlagTreeEverywhere:
-    skip_flagtree_upgrade: true
-
-  KeepImageFlagTreeOnSelectedHardware:
-    skip_flagtree_upgrade: [H800, 910B]
+  FlagGems:
+    deps:
+      910B:
+        flagtree-ascend-cann9.0.0:
+          enabled: false
 ```
 
-The boolean form skips the step for the entire repository. The list form skips
-only the named backends; all other configured backends still receive their
-configured wheels. Omit `skip_flagtree_upgrade` for the normal upgrade behavior.
 The current `FlagGems` 910B exception uses the CANN 9.2.1 runtime image and
 retains its image-provided FlagTree because the shared 910B daily wheel targets
 CANN 9.0.0. Other FlagGems backends and the 910B backend in other repositories
@@ -799,6 +807,214 @@ daily wheels. Its Cambricon backend similarly uses the current Neuware 4.7.2
 shared backend image, but retains the image-provided FlagTree because no
 Cambricon daily distribution is configured. Only FlagGems currently enables
 this backend, so it does not need a repository-specific image override.
+
+### FlagGems upgrade
+
+After the backend-specific FlagTree step and before GPU detection, the workflow
+installs a shared FlagGems daily wheel into the active Python environment. The
+wheel is vendor-independent, so its configuration lives once under
+`defaults.deps` in `.github/configs/repos.yaml` instead of being duplicated
+across backend YAML files:
+
+```yaml
+defaults:
+  deps:
+    flag-gems:
+      display_name: FlagGems
+      priority: 200
+      version: 5.5.0.dev20261118
+      index_url: https://resource.flagos.net/repository/flagos-pypi-daily/simple
+      no_deps: true
+```
+
+The configured artifact is
+`packages/flag-gems/5.5.0.dev20261118/flag_gems-5.5.0.dev20261118-py3-none-any.whl`.
+The generic upgrade step processes FlagTree first because its priority is 100,
+then FlagGems at priority 200. It uses `uv pip install --no-deps` with the
+configured index and verifies through the
+active Python interpreter that the installed distribution exactly matches the
+configured version.
+
+A repository that must not receive the daily wheel uses a package override:
+
+```yaml
+repos:
+  FlagGems:
+    deps:
+      default:
+        flag-gems:
+          enabled: false
+```
+
+This exception applies to FlagGems itself because its checked-out source is
+installed editable later in the job.
+
+The generic dependency map is resolved independently for every package name.
+Use the exact same package key in multiple layers to override it:
+
+| Precedence | Configuration layer | Scope |
+| ---: | --- | --- |
+| 1 (lowest) | `defaults.deps` | Every enabled backend of every repository. |
+| 2 | `.github/configs/backends/<backend>.yaml` `deps` | That hardware backend in every repository where it is enabled. |
+| 3 | `repos.<repo>.deps.default` | Every enabled backend of one repository. |
+| 4 (highest) | `repos.<repo>.deps.<backend>` | One repository/backend combination. |
+
+Merging is field-by-field, not whole-package replacement. A field omitted by a
+later layer keeps its inherited value. The final merged `enabled` value decides
+whether the package is installed: it defaults to `true` when no layer sets it;
+an inherited `false` remains false through later layers that omit `enabled`;
+and only a later explicit `enabled: true` re-enables it. Conversely, a later
+explicit `enabled: false` always disables values inherited from lower layers.
+This is independent from `repos.<repo>.backends.<name>.enabled`: a disabled
+backend is removed from the matrix before package resolution, so package-level
+`enabled: true` cannot restore it.
+
+Merge precedence does not determine installation order. After disabled
+packages are removed, enabled packages are installed by ascending `priority`
+(default `1000`), then lexicographically by package name for equal priorities.
+
+`version` is metadata used to build `package==version`; when omitted, the bare
+package name is installed. Control keys (`enabled`, `display_name`, `priority`,
+and `version`) are not passed to uv. Every other key becomes a
+`uv pip install` option with underscores changed to hyphens: `index_url` becomes
+`--index-url VALUE`, `no_deps: true` becomes `--no-deps`, lists repeat the
+option, and omitted keys produce no argument. `target` additionally enables
+staged replacement at `<target>.new` and persists that path on `PYTHONPATH`.
+
+#### Adding and excluding configured packages
+
+Use these recipes only for shared test-environment packages. The package name
+is the YAML mapping key and must be identical in every layer that overrides it.
+
+Add a package to every enabled backend of every repository:
+
+```yaml
+# .github/configs/repos.yaml
+defaults:
+  deps:
+    shared-profiler:
+      display_name: Shared profiler
+      priority: 300
+      version: 2.4.1
+      index_url: https://example.invalid/simple
+      no_deps: true
+```
+
+Add a hardware-specific shared package to every repository that enables that
+backend:
+
+```yaml
+# .github/configs/backends/H800.yaml
+deps:
+  nvidia-debug-runtime:
+    display_name: NVIDIA debug runtime
+    priority: 400
+    version: 1.8.0
+```
+
+Disable an inherited package for an entire repository, or only for one of its
+backends:
+
+```yaml
+# .github/configs/repos.yaml
+repos:
+  SomeRepo:
+    deps:
+      default:
+        shared-profiler:
+          enabled: false       # all enabled SomeRepo backends
+      H800:
+        nvidia-debug-runtime:
+          enabled: false       # SomeRepo/H800 only
+```
+
+To skip the entire backend job for a repository, use the separate backend
+switch instead:
+
+```yaml
+repos:
+  SomeRepo:
+    backends:
+      H800: {enabled: false}    # removes SomeRepo/H800 from the matrix
+```
+
+`backends.H800.enabled: false` skips every package and the test job for that
+combination. `deps.H800.<package>.enabled: false` skips only that package and
+still runs SomeRepo on H800.
+
+Add an exceptional central package for one repository, or one repository and
+backend combination:
+
+```yaml
+repos:
+  SomeRepo:
+    deps:
+      default:
+        shared-ci-helper:
+          version: 3.1.0       # every enabled SomeRepo backend
+          priority: 500
+      910B:
+        ascend-ci-helper:
+          version: 4.2.0       # SomeRepo/910B only
+          priority: 500
+```
+
+These repository-scoped central entries are exceptions. Prefer
+`SomeRepo/pyproject.toml` for packages owned by SomeRepo. To re-enable a package
+disabled by a lower layer, set `enabled: true` at the more specific layer; an
+omitted `enabled` inherits the earlier value.
+
+The package fields have these meanings:
+
+| Field | Behavior |
+| --- | --- |
+| `<package-name>` | Exact distribution key used to merge the four configuration layers and build the install requirement. Hyphenated and underscored spellings are different configuration keys. |
+| `display_name` | Human-readable log label only. It does not change the distribution name, import name, merge identity, or install order. Defaults to the package key. |
+| `priority` | Integer controlling configured-package install order: lower values run first; default `1000`; equal values sort by package key. It does not change configuration merge precedence. |
+| `enabled` | Final merged boolean controlling whether the package is installed. Defaults to `true`; the last explicit value wins. |
+| `version` | Produces the exact requirement `<package>==<version>`. Omitting it installs the bare package requirement. |
+| `target` | Normalized, specific absolute install directory such as `/opt/flagtree`. The workflow installs into `<target>.new`, replaces the old directory only after success, and prepends `target` to `PYTHONPATH`. Omit it for normal active-environment packages. |
+| Other fields | Converted to uv options: for example `index_url` becomes `--index-url`, `no_deps: true` becomes `--no-deps`, and list values repeat the option. |
+
+`target` is not a generic virtual-environment prefix. A target-directory package
+can coexist with a distribution in the active Python environment, and the
+prepended `PYTHONPATH` may take import precedence. Avoid declaring the same
+distribution in a target repository unless that coexistence is deliberate.
+
+#### Installation order and same-name packages
+
+The workflow builds the environment in this order:
+
+| Phase | Source | Result |
+| ---: | --- | --- |
+| 1 | Backend container image | Supplies the initial Python environment and vendor runtime. |
+| 2 | optest checkout | Installs the scheduler and its own package metadata. |
+| 3 | Merged central `deps` | Installs enabled packages by ascending `priority`, then package key. Exact `version` pins are verified immediately. |
+| 4 | GPU detection | Selects the target repository's vendor extra. |
+| 5 | Target repository `pyproject.toml` | Installs the base project editable plus `test` and detected-vendor extras. This is the final dependency-resolution phase before tests. |
+
+For normal active-environment packages, the later target install has final
+authority over requirements declared by the target project, but uv is
+incremental rather than an unconditional overwrite:
+
+- If the target declares an exact or constrained version that the installed
+  package does not satisfy, uv installs a satisfying version, replacing the
+  earlier image or central-`deps` version when necessary.
+- If the installed version already satisfies the target requirement, uv can
+  keep it; “installed later” does not by itself force a reinstall.
+- If the target project itself has the same distribution name as an installed
+  wheel, the editable target install becomes the active project distribution.
+  This is why the `FlagGems` repository disables the global `flag-gems` entry.
+- A name in `[tool.uv].exclude-dependencies` is omitted from target dependency
+  resolution. The compatible version supplied by the image or central `deps`
+  remains active; the target pin does not replace it.
+
+Therefore, keep one owner for each requirement. Use `pyproject.toml` as the
+authority for repository-owned dependencies, use central `deps` for shared
+environment preparation, and use exclusions only for intentional image/shared
+runtime ownership. `priority` orders central install commands; it is not a
+general dependency-conflict resolver, and the target install always occurs
+after all central priorities.
 
 ### Persistent package cache
 
@@ -825,6 +1041,13 @@ UV_LINK_MODE  = copy
 - `UV_LINK_MODE=copy` is required because the cache and the environment live on
   different filesystems; it also silences the hardlink-fallback warning.
 
+The optest-install step also checks that the runner's `uv` supports
+`uv pip show --target` (known supported baseline: `0.11.30`). An older
+image-provided binary first runs `uv self update 0.11.30`, which inherits
+`UV_CACHE_DIR`; if self-update is unavailable, the step installs
+`uv>=0.11.30` through the existing pip index fallback and `PIP_CACHE_DIR`, then
+activates that Python environment's scripts directory for later steps.
+
 How this behaves across runs:
 
 - **First run (cold cache):** `uv` downloads each wheel once from the configured
@@ -835,8 +1058,8 @@ How this behaves across runs:
   changed direct-URL requirement re-downloads only the changed wheel
   automatically. No manual cache invalidation is needed.
 
-The optest, FlagTree, and target-dependency install steps use normal
-`uv pip install` output. All three print a `[Cache debug]` report
+The optest, generic package-upgrade, and target-dependency install steps use
+normal `uv pip install` output. All three print a `[Cache debug]` report
 (the resolved `UV_CACHE_DIR`/`PIP_CACHE_DIR`/`UV_LINK_MODE`, and whether the
 cache is `COLD` or `WARM` with its size and file count) before and after
 installing, so the step log clearly shows which wheels were reused from the
@@ -901,9 +1124,8 @@ form the GitHub checkout target. Each repository entry can define:
 | `default_branch` | Target branch used when the workflow does not receive an explicit ref. |
 | `backends.<name>.enabled` | Enables or disables a shared hardware backend for that repository. |
 | `container_images.<backend>` | Repository-specific image override for a backend. |
-| `skip_flagtree_upgrade` | Optional `true` to retain image FlagTree on every backend, or a backend-name list for selected exceptions. |
-| `deps.default` | Explicit fallback packages installed for every enabled backend. Prefer target `pyproject.toml` vendor extras. |
-| `deps.<backend>` | Explicit fallback packages installed only for one backend. Prefer target `pyproject.toml` vendor extras. |
+| `deps.default.<package>` | Repository-wide package override or addition for every enabled backend; fields override global and backend values. |
+| `deps.<backend>.<package>` | Highest-precedence package override for one backend; explicit `enabled: true` can re-enable and `false` can disable the inherited package. |
 | `base_data` | Optional performance-baseline JSON path in the target checkout. |
 | `op_cmd_timeout` | Timeout in seconds for each accuracy or performance subprocess. Inherits `defaults.op_cmd_timeout`. |
 | `ops_test_timeout_minutes` | Per-repository timeout for the operator-test step. |
@@ -923,14 +1145,19 @@ repos:
 
 `repos.<repo>.container_images.<backend>` takes precedence over the backend's
 `container_image`. If no repository override exists, the shared backend image
-is used. Explicit dependency lists remain additive for exceptional backend
-requirements:
+is used. Package maps are merged by exact package name and then by field, from
+least to most specific:
 
 ```text
-backend deps + repo deps.default + repo deps.<backend>
+defaults.deps -> backend deps -> repo deps.default -> repo deps.<backend>
 ```
 
-Normal target-specific vendor dependencies should not use these lists. The
+The last explicit value for each field wins. In particular, the last explicit
+`enabled` value wins; omitting it inherits the prior state. Package
+`priority` controls only the resulting install order and never changes this
+configuration precedence.
+
+Normal target-specific vendor dependencies should not use these maps. The
 workflow instead selects the target's optional-dependency group from the vendor
 key reported by `flagos-gpu-check`.
 
@@ -947,10 +1174,9 @@ hardware configuration shared by all repositories:
 | `container_image` | Default image, unless the selected repository overrides it. |
 | `container_volumes` | Host paths mounted into the job container. |
 | `container_options` | Device mappings, privileges, IPC, shared memory, and other container runtime options. |
-| `flagtree` | Optional backend wheel mapping with required `package_name`, full default `version`, and `index_url`; absence retains image FlagTree. |
+| `deps.<package>` | Hardware-specific package defaults merged into the generic upgrade map. |
 | `test_gpus` | Optional device-ID override; when omitted, `flagos-gpu-check` supplies the available devices. |
 | `test_env` | Environment variables injected into the operator-test step. |
-| `deps` | Hardware-specific packages prepended to repository dependency groups. |
 | `output_base_dir` | Base directory for result folders and archives. |
 
 Current backend defaults cover H800/NVIDIA, 910B/Ascend, C550/MetaX,
