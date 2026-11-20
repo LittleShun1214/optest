@@ -246,6 +246,8 @@ def test_generated_archive_satisfies_op_monitor_contract(tmp_path, monkeypatch):
     operator = summary["result"][operator_name]
     accuracy = operator["accuracy"]
     assert _ACCURACY_FIELDS <= accuracy.keys()
+    assert accuracy.get("details_mode") == "external"
+    assert "details" not in accuracy
     assert accuracy["status"].lower() == "passed"
     count_fields = _ACCURACY_FIELDS - {"status", "exit_code"}
     assert all(isinstance(accuracy[field], int) for field in count_fields)
@@ -259,6 +261,12 @@ def test_generated_archive_satisfies_op_monitor_contract(tmp_path, monkeypatch):
     for dtype_result in performance["data"].values():
         assert "speedup" in dtype_result
         assert isinstance(dtype_result["speedup"], int | float)
+        assert "details" not in dtype_result
+        assert dtype_result["base"] == 2.0
+        assert dtype_result["gems"] == 1.0
+        assert dtype_result["shape_count"] == 1
+    assert performance.get("details_mode") == "external"
+    assert performance.get("speedup_source") == "origin"
 
     assert isinstance(operator.get("customized"), bool)
     assert isinstance(operator.get("labels"), list)
