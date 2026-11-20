@@ -365,6 +365,83 @@ When changing the cache derivation, keep it keyed on `output_base_dir` and
 `vendor` (not repository) so vendors share one cache across repositories, and
 update the matching sections in `README.md` and `README.zh-CN.md`.
 
+## NV Baseline Incremental Refresh
+
+`.github/workflows/nv_baseline.yaml` refreshes a published baseline
+(`data/op_<short>_perf_baseline.json`) instead of rebuilding it. Its `mode`
+dispatch input selects how:
+
+- `incremental` (default) re-collects only operators that are absent from the
+  committed baseline or whose stored `label` differs from the framework version
+  installed in the collecting container, and carries every other published
+  entry into the new output unchanged. The produced file is therefore the
+  merged, complete baseline.
+- `full` ignores the committed baseline and re-collects every selected
+  operator, the behavior before the modes existed.
+
+The decision lives in one place, `src/nv_baseline/baseline_refresh.py`
+(`plan_refresh`), which both the single-card collector and the multi-GPU
+scheduler call; neither re-implements the comparison. It also owns
+`detect_label`, the probe for the framework version (`vllm`, `sglang`,
+`deepspeed`) that each operator entry is labeled with. Add a framework to
+`LABEL_FRAMEWORKS` there, not in the collectors.
+
+`IGNORE_LOCAL_VERSION` in that module is a **temporary workaround**, currently
+holding `deepspeed`: its entries are compared on the public version only, with
+the PEP 440 local segment dropped (`0.20.1+b5e0ba6` -> `0.20.1`). FlagTrain
+installs DeepSpeed from an unpinned `git clone` of main (both the workflow step
+and FlagTrain's `baseline/README.md` prescribe that), and DeepSpeed appends the
+checkout's commit hash to its version, so without this every FlagTrain refresh
+re-collected all 32 operators. The cost is that a DeepSpeed main commit which
+does change a baseline kernel no longer triggers a refresh. Each affected run
+prints a `[refresh] WARNING` line, the workflow summary raises a `::warning::`
+annotation, and the published `_incremental.local_version_ignored` names the
+operators and both builds. Pin the install to a fixed ref or a PyPI release
+(DeepSpeed publishes plain versions) and then drop `deepspeed` from the set;
+no other code changes.
+
+Behavior worth preserving when changing this flow:
+
+- An operator queued for re-collection whose collection produces nothing
+  (failed, skipped, timed out) keeps its previously published entry and its old
+  label, so a refresh never deletes a known-good operator and the next run
+  retries it. `restored_after_failure` in the output's `_incremental` block
+  records that.
+- An incremental run that finds nothing stale collects nothing and runs no
+  operator subprocess. The classify step grades that as a pass (it tells it
+  apart from a crash by the recorded plan).
+- `_environment` and `_scaling_factors` describe the machine a run measured on,
+  so only a collecting child produces them. When no child reports them -- an
+  incremental run with nothing stale, or one whose every queued operator died
+  before flushing its own metadata -- `carry_over_metadata` takes them from the
+  previous baseline and names the keys in `status.json`'s
+  `incremental.carried_over_metadata`; a value a child did report always wins.
+  Without that, a run that still republishes operators (retained or restored)
+  would publish them with no provenance at all. The single-card collector is
+  not affected: it writes both keys in the parent before collecting.
+- Every write of the baseline goes through `publishable()`, which puts
+  `_environment` and `_scaling_factors` at the top of the file in that order
+  (identically in both modes) and keeps run-time bookkeeping out of the
+  published data. Add a new provenance key to `PUBLISHED_FIRST` and a new
+  run-time key to `DROPPED_FROM_PUBLISHED`, rather than ordering at a call
+  site.
+- The `data/` update step refuses to commit an incremental result that holds
+  fewer operators than the file it replaces. Full mode stays exempt, since
+  there a failed operator is intentionally absent and the commit is marked
+  forced.
+- The refresh plan (mode, label, collected, retained, per-operator decisions,
+  `local_version_ignored`, `carried_over_metadata`) is recorded in the sidecar
+  `${OUTPUT}.work/status.json` under `incremental`, which the workflow grades
+  and summarizes from and uploads as an artifact. It is deliberately NOT in the
+  published baseline, which carries measurements and provenance only. Keep any
+  new bookkeeping key `_`-prefixed; consumers identify operators by the absence
+  of that prefix.
+
+`tests/test_baseline_refresh.py` covers the planner, the scheduler path with a
+stubbed collector subprocess, and the workflow's classify/update steps. The
+published baselines are asserted to be fully labeled: an unlabeled operator
+would make every refresh a full one.
+
 ## Conventions
 
 - Preserve UTF-8 without BOM and Unix line endings.
