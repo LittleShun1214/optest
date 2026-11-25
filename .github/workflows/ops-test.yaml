@@ -577,6 +577,7 @@ jobs:
             https://mirrors.aliyun.com/pypi/simple/
             https://mirrors.cloud.tencent.com/pypi/simple/
             https://mirrors.163.com/pypi/simple/
+            https://pypi.sourcefind.cn/nightly/dtk/
           )
 
           run_with_index_fallback() {
@@ -979,6 +980,7 @@ jobs:
             https://mirrors.aliyun.com/pypi/simple/
             https://mirrors.cloud.tencent.com/pypi/simple/
             https://mirrors.163.com/pypi/simple/
+            https://pypi.sourcefind.cn/nightly/dtk/
           )
 
           run_uv_with_index_fallback() {
@@ -1082,6 +1084,19 @@ jobs:
               uv pip install --python "${ACTIVE_PYTHON}" --editable "${TARGET_PROJECT_SPEC}"
           )
           print_cache_debug "target install: after"
+
+      - name: Run vendor post-install script
+        env: ${{ fromJSON(matrix.test_env) }}
+        shell: bash --login -e -o pipefail {0}
+        run: |
+          VENDOR=$(printf '%s' "${{ matrix.vendor }}" | tr '[:upper:]' '[:lower:]')
+          SCRIPT=".github/scripts/post_install/${VENDOR}.sh"
+          if [ ! -f "${SCRIPT}" ]; then
+            echo "[Post-install script] ${VENDOR}: no post-install patches"
+            exit 0
+          fi
+          echo "[Post-install script] ${VENDOR}: running ${SCRIPT}"
+          bash "${SCRIPT}"
 
       # Run ops tests.
       # OPS is provided by the prepare job: "all" (scheduled runs or an empty

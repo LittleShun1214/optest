@@ -57,6 +57,11 @@ deps:
 # Extra environment variables injected only into the "Run ops tests" step
 test_env:
   GEMS_VENDOR: hygon
+  FLAGTREE_BACKEND: hcu
+  VLLM_PLUGINS: hcu
+  VLLM_USE_V2_MODEL_RUNNER: "1"
+  ROCM_PATH: /opt/dtk
+  UV_DEFAULT_INDEX: https://pypi.sourcefind.cn/nightly/dtk/
 
 # Output base directory; ops-test appends the GitHub repository name
 output_base_dir: /data/github-outputs
