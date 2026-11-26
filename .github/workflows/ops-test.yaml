@@ -1104,18 +1104,175 @@ jobs:
           )
           print_cache_debug "target install: after"
 
-      - name: Run vendor post-install script
+      - name: Run inline post-install script
         env: ${{ fromJSON(matrix.test_env) }}
         shell: bash --login -e -o pipefail {0}
         run: |
           VENDOR=$(printf '%s' "${{ matrix.vendor }}" | tr '[:upper:]' '[:lower:]')
-          SCRIPT=".github/scripts/post_install/${VENDOR}.sh"
-          if [ ! -f "${SCRIPT}" ]; then
-            echo "[Post-install script] ${VENDOR}: no post-install patches"
-            exit 0
+          export VENDOR
+          # Run the target repository's post-install step after its torch stack is
+          # installed. Profiles are selected by POST_INSTALL_PROFILE in the target
+          # repo's test_env.<backend>; keep the logic inline so this branch adds no
+          # post_install file or directory.
+          set -euo pipefail
+
+          TARGET="${TARGET_DIR:-}"
+          if [ -z "${TARGET}" ]; then
+            echo "[Post-install] TARGET_DIR is required" >&2
+            exit 1
           fi
-          echo "[Post-install script] ${VENDOR}: running ${SCRIPT}"
-          bash "${SCRIPT}"
+          VENDOR="${VENDOR:-}"
+          ROOT="${GITHUB_WORKSPACE:-$PWD}"
+          WRAPPER="${ROOT}/${TARGET}/tools/flagcx_wrapper/build_flagcx_wheel.sh"
+
+          case "${VENDOR}" in
+            hygon)   PROFILE="${POST_INSTALL_PROFILE:-hygon-generic}" ;;
+            metax)   PROFILE="${POST_INSTALL_PROFILE:-metax-generic}" ;;
+            mthreads) PROFILE="${POST_INSTALL_PROFILE:-musa-generic}" ;;
+            *)
+              echo "[Post-install] ${VENDOR:-unknown}: no post-install steps"
+              exit 0
+              ;;
+          esac
+
+          if [ "${VENDOR}" = "mthreads" ]; then
+            export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+          fi
+
+          build_flagcx() {
+            if [ ! -x "${WRAPPER}" ]; then
+              echo "[Post-install] no FlagCX wrapper at ${WRAPPER}"
+              return 0
+            fi
+            local wheel
+            FLAGCX_OUT="$(mktemp -d)"
+            trap 'rm -rf "${FLAGCX_OUT}"' EXIT
+            case "${VENDOR}" in
+              hygon)
+                FLAGCX_ADAPTOR=du "${WRAPPER}" "${FLAGCX_OUT}"
+                ;;
+              metax)
+                FLAGCX_ADAPTOR=metax DEVICE_HOME=/opt/maca CCL_HOME=/opt/maca USE_METAX=1 \
+                  "${WRAPPER}" "${FLAGCX_OUT}"
+                ;;
+              mthreads)
+                FLAGCX_ADAPTOR=musa "${WRAPPER}" "${FLAGCX_OUT}"
+                ;;
+            esac
+            wheel="$(ls "${FLAGCX_OUT}"/flagcx-*.whl | head -1)"
+            echo "[Post-install] installing ${wheel}"
+            uv pip install --python "$(command -v python3)" --force-reinstall --no-deps "${wheel}"
+          }
+
+          check_torch() {
+            local vendor="$1"
+            python3 - "${vendor}" <<'PY'
+          import sys
+          import torch
+
+          vendor = sys.argv[1]
+          if vendor == "mthreads":
+              import torch_musa
+              assert torch.musa.is_available(), "torch.musa is not available"
+          else:
+              assert torch.cuda.is_available(), "torch.cuda is not available"
+              assert torch.cuda.device_count() > 0, "no device visible"
+          print(f"[Post-install] {vendor}: torch runtime OK")
+          PY
+          }
+
+          setup_hygon_generic() {
+            check_torch hygon
+          }
+
+          setup_hygon_vllm() {
+            check_torch hygon
+            python3 - <<'PY'
+          import flagcx
+          import torch
+          import vllm
+          import vllm_hcu
+          from vllm.platforms import current_platform
+
+          assert torch.cuda.is_available(), "torch.cuda is not available"
+          assert torch.cuda.device_count() > 0, "no Hygon device visible"
+          assert "hcu" in type(current_platform).__module__.lower(), type(current_platform)
+          assert "vllm_hcu" in type(current_platform).__module__, type(current_platform)
+          print(f"[Post-install] Hygon vLLM platform OK: {type(current_platform).__module__}")
+          PY
+          }
+
+          setup_metax_generic() {
+            check_torch metax
+          }
+
+          setup_metax_vllm() {
+            check_torch metax
+            python3 -m pip uninstall -y torchaudio || true
+            python3 -c 'import vllm; assert vllm.__version__.split("+")[0] == "0.29.0"' 2>/dev/null \
+              || python3 -m pip install --no-cache-dir --no-deps "vllm @ https://files.pythonhosted.org/packages/ca/09/7f79450e21bd1c2a0897ab946a544816a4f7e04c54f0ca49849b14b12d6a/vllm-0.29.0-cp38-abi3-manylinux_2_28_x86_64.whl#sha256=09d48617fc2be9c6cdcd5db480651ab0d84817b257204f2cc2e3ecbb70bbb635"
+            python3 -c 'import xgrammar' 2>/dev/null \
+              || python3 -m pip install --no-cache-dir --no-deps "xgrammar==0.2.8"
+
+            python3 - <<'PY'
+          import importlib.metadata as md
+          import torch
+          import vllm
+          import vllm_metax
+          import flagcx
+          from vllm.platforms import current_platform
+
+          assert torch.cuda.is_available(), "torch.cuda is not available"
+          assert torch.cuda.device_count() > 0, "no MetaX device visible"
+          assert vllm.__version__.split("+")[0] == "0.29.0", vllm.__version__
+          assert vllm_metax.__version__.startswith("0.29.0"), vllm_metax.__version__
+          assert type(current_platform).__module__.startswith("vllm_metax"), type(current_platform)
+          groups = {ep.group for ep in md.distribution("vllm-metax").entry_points}
+          assert "vllm.platform_plugins" in groups, groups
+          assert "vllm.general_plugins" in groups, groups
+          print("[Post-install] MetaX vLLM platform OK")
+          PY
+          }
+
+          setup_musa_generic() {
+            check_torch mthreads
+          }
+
+          setup_musa_vllm() {
+            check_torch mthreads
+            python3 - <<'PY'
+          import importlib.metadata as md
+          import torch_musa
+          import torch
+          import vllm
+          import vllm_musa
+          from vllm.platforms import current_platform
+
+          assert torch.musa.is_available(), "torch.musa is not available"
+          assert vllm.__version__.split("+")[0] == "0.32.0", vllm.__version__
+          assert vllm_musa.__version__ == "0.1.32", vllm_musa.__version__
+          assert current_platform.is_musa(), type(current_platform)
+          groups = {ep.group for ep in md.distribution("vllm-musa").entry_points}
+          assert "vllm.platform_plugins" in groups, groups
+          assert "vllm.general_plugins" in groups, groups
+          print("[Post-install] MUSA vLLM platform OK")
+          PY
+          }
+
+          build_flagcx
+
+          case "${PROFILE}" in
+            hygon-generic) setup_hygon_generic ;;
+            hygon-vllm) setup_hygon_vllm ;;
+            metax-generic) setup_metax_generic ;;
+            metax-vllm) setup_metax_vllm ;;
+            musa-generic) setup_musa_generic ;;
+            musa-vllm) setup_musa_vllm ;;
+            *)
+              echo "[Post-install] unknown POST_INSTALL_PROFILE=${PROFILE}" >&2
+              exit 1
+              ;;
+          esac
 
       # Run ops tests.
       # OPS is provided by the prepare job: "all" (scheduled runs or an empty
