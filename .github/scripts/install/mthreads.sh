@@ -23,10 +23,6 @@
 #      fails with "no matching 'operator new'".
 set -eo pipefail
 
-# The vendor index is served directly in CI; keep it off any proxy.
-export no_proxy="${no_proxy:+${no_proxy},}dl.mthreads.com,localhost,127.0.0.1"
-export NO_PROXY="${NO_PROXY:+${NO_PROXY},}dl.mthreads.com,localhost,127.0.0.1"
-
 # The runtime image ships FlagCX for the old torch; suppress backend
 # autoload until post_install rebuilds it against the final torch.
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
