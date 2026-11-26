@@ -48,6 +48,26 @@ apt-get update
 apt-get install -y --no-install-recommends g++-12 libstdc++-12-dev intel-mkl libz3-4 libz3-dev libgflags-dev libgoogle-glog-dev
 
 PYTHON=python3
+
+# The full MUSA 0.32 stack is needed only by the FlagGems-vllm target.
+# Other MThreads repositories keep the torch/accelerator stack supplied by
+# their own images.
+TARGET_NAME="${TARGET_REPOSITORY:-}"
+TARGET_NAME="${TARGET_NAME##*/}"
+if [ -z "${TARGET_NAME}" ]; then
+  TARGET_NAME="${TARGET_DIR:-}"
+  TARGET_NAME="${TARGET_NAME##*/}"
+fi
+if [ -z "${TARGET_NAME}" ]; then
+  TARGET_NAME="FlagGems-vllm"
+fi
+IS_FLAGGEMS_VLLM=0
+if [ "${TARGET_NAME}" = "FlagGems-vllm" ]; then
+  IS_FLAGGEMS_VLLM=1
+  echo "[Install script] installing FlagGems-vllm MUSA 0.32 stack"
+else
+  echo "[Install script] target ${TARGET_NAME}; keeping its image-provided torch stack"
+fi
 MUSA=""
 for candidate in \
   "${MUSA_HOME:+${MUSA_HOME}/lib}" \
@@ -81,6 +101,7 @@ print(pathlib.Path(spec.origin).parent / 'csrc' / 'stable_compat' / 'torchada_st
 "
 }
 
+if [ "${IS_FLAGGEMS_VLLM}" = 1 ]; then
 BOX=$(find_box)
 if [ -z "${BOX}" ]; then
   "${PYTHON}" -m pip install "torchada>=0.1.76"
@@ -101,7 +122,7 @@ if ! grep -qxF "${LINE}" "${BOX}"; then
   mv "${BOX}.new" "${BOX}"
 fi
 
-# The image ships only the base runtime; install the full MUSA 0.24 kernel
+# The image ships only the base runtime; install the full MUSA 0.32 kernel
 # stack here so the target repository and its tests see the same environment.
 VENDOR_INDEX="https://dl.mthreads.com/repo/api/pypi/pypi/simple"
 VENDOR_PACKAGES=(
@@ -124,4 +145,7 @@ VENDOR_PACKAGES=(
 )
 "${PYTHON}" -m pip install --disable-pip-version-check --no-deps \
   --index-url "${VENDOR_INDEX}" "${VENDOR_PACKAGES[@]}"
+else
+  echo "[Install script] skipping FlagGems-vllm MUSA 0.32 stack and torchada CUB patch for ${TARGET_NAME}"
+fi
 

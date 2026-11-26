@@ -130,6 +130,14 @@ repos:
         POST_INSTALL_PROFILE: metax-vllm
         UV_EXTRA_INDEX_URL: https://repos.metax-tech.com/r/maca-pypi/simple/
         UV_INDEX_STRATEGY: unsafe-best-match
+      BW1000:
+        FLAGTREE_BACKEND: hcu
+        VLLM_PLUGINS: hcu
+        VLLM_USE_V2_MODEL_RUNNER: "1"
+        ROCM_PATH: /opt/dtk
+        UV_DEFAULT_INDEX: https://pypi.sourcefind.cn/nightly/dtk/
+      MTT-S5000:
+        VLLM_PLUGINS: musa
     container_images:
       C550: harbor.baai.ac.cn/flagos-runtime/flagos-runtime-metax-maca3.10.1.11:2.3.0
       MTT-S5000: harbor.baai.ac.cn/flagos-runtime/flagos-runtime-mthreads-musa5.2.0:2.3.0
