@@ -132,6 +132,7 @@ repos:
         UV_INDEX_STRATEGY: unsafe-best-match
     container_images:
       C550: harbor.baai.ac.cn/flagos-runtime/flagos-runtime-metax-maca3.10.1.11:2.3.0
+      MTT-S5000: harbor.baai.ac.cn/flagos-runtime/flagos-runtime-mthreads-musa5.2.0:2.3.0
     # Optional ops-baseline JSON (relative to the optest repo root, i.e.
     # GITHUB_WORKSPACE). Points at the baseline the nv-baseline workflow commits
     # into optest's data/ dir, so ops-test consumes the freshly collected

@@ -27,6 +27,13 @@ set -eo pipefail
 export no_proxy="${no_proxy:+${no_proxy},}dl.mthreads.com,localhost,127.0.0.1"
 export NO_PROXY="${NO_PROXY:+${NO_PROXY},}dl.mthreads.com,localhost,127.0.0.1"
 
+# The runtime image ships FlagCX for the old torch; suppress backend
+# autoload until post_install rebuilds it against the final torch.
+export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+if [ -n "${GITHUB_ENV:-}" ]; then
+  echo "TORCH_DEVICE_BACKEND_AUTOLOAD=${TORCH_DEVICE_BACKEND_AUTOLOAD}" >> "${GITHUB_ENV}"
+fi
+
 if [ "$(id -u)" -ne 0 ]; then
   echo "[Install script] ERROR: must run as root to install system packages"
   exit 1
@@ -38,7 +45,7 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends g++-12 libstdc++-12-dev intel-mkl libz3-4 libz3-dev
+apt-get install -y --no-install-recommends g++-12 libstdc++-12-dev intel-mkl libz3-4 libz3-dev libgflags-dev libgoogle-glog-dev
 
 PYTHON=python3
 MUSA=""
@@ -98,19 +105,23 @@ fi
 # stack here so the target repository and its tests see the same environment.
 VENDOR_INDEX="https://dl.mthreads.com/repo/api/pypi/pypi/simple"
 VENDOR_PACKAGES=(
-  "torch==2.9.1.post1+musa5.2.0"
-  "torch_musa==2.9.1.post1+musa5.2.0"
-  "torchvision==0.24.1.post1+musa5.2.0"
-  "torchaudio==2.9.1+musa5.2.0"
-  "mate==0.2.4"
-  "flash_attn_3==0.2.4+musa"
-  "flash_mla==0.2.4+musa"
-  "deep_gemm==0.2.4+musa"
-  "sageattention==0.2.4+musa"
-  "deep_ep==1.1.0+musa5.2.0torch2.9.1.post1s5000"
-  "tilelang_musa==0.1.8+musa.3"
-  "apache-tvm-ffi==0.1.9.post3+musa.1"
+  "torch==2.11.0.post1+musa5.2.0"
+  "torch_musa==2.11.0.post1+musa5.2.0"
+  "torchvision==0.26.0.post1+musa5.2.0"
+  "torchaudio==2.11.0+musa5.2.0"
+  "mate==0.2.8.post1"
+  "mate-mubin==0.2.8.post1"
+  "flash_attn_3==0.2.8.post1+musa"
+  "flash_mla==0.2.8.post1+musa"
+  "deep_gemm==0.2.8.post1+musa"
+  "flashinfer-python==0.2.8.post1+musa"
+  "sageattention==0.2.8.post1+musa"
+  "deep_ep==1.1.0+musa5.2.0torch2.11.0.post2"
+  "tilelang_musa==0.1.12+musa.5"
+  "triton==3.2.0"
+  "apache-tvm-ffi==0.1.11.post1+musa.1"
   "torch-c-dlpack-ext==0.1.5"
 )
 "${PYTHON}" -m pip install --disable-pip-version-check --no-deps \
   --index-url "${VENDOR_INDEX}" "${VENDOR_PACKAGES[@]}"
+
