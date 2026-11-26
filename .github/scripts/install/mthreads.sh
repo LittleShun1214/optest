@@ -101,7 +101,6 @@ print(pathlib.Path(spec.origin).parent / 'csrc' / 'stable_compat' / 'torchada_st
 "
 }
 
-if [ "${IS_FLAGGEMS_VLLM}" = 1 ]; then
 BOX=$(find_box)
 if [ -z "${BOX}" ]; then
   "${PYTHON}" -m pip install "torchada>=0.1.76"
@@ -122,6 +121,7 @@ if ! grep -qxF "${LINE}" "${BOX}"; then
   mv "${BOX}.new" "${BOX}"
 fi
 
+if [ "${IS_FLAGGEMS_VLLM}" = 1 ]; then
 # The image ships only the base runtime; install the full MUSA 0.32 kernel
 # stack here so the target repository and its tests see the same environment.
 VENDOR_INDEX="https://dl.mthreads.com/repo/api/pypi/pypi/simple"
@@ -146,6 +146,6 @@ VENDOR_PACKAGES=(
 "${PYTHON}" -m pip install --disable-pip-version-check --no-deps \
   --index-url "${VENDOR_INDEX}" "${VENDOR_PACKAGES[@]}"
 else
-  echo "[Install script] skipping FlagGems-vllm MUSA 0.32 stack and torchada CUB patch for ${TARGET_NAME}"
+  echo "[Install script] skipping FlagGems-vllm MUSA 0.32 stack for ${TARGET_NAME}"
 fi
 
