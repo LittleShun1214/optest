@@ -154,6 +154,15 @@ jobs:
           op_cmd_timeout = rc.get('op_cmd_timeout', default_op_cmd_timeout)
 
           images = rc.get('container_images', {})
+          # Optional repo-scoped test environment overrides. A `default` key
+          # applies to every backend; a backend-name key applies only to that
+          # backend. Both are merged over the shared backend test_env below.
+          repo_test_env = rc.get('test_env') or {}
+          if not isinstance(repo_test_env, dict):
+              raise SystemExit(f'repos.{repo}.test_env must be a mapping')
+          repo_test_env_default = repo_test_env.get('default', {}) or {}
+          if not isinstance(repo_test_env_default, dict):
+              raise SystemExit(f'repos.{repo}.test_env.default must be a mapping')
           default_deps = main.get('defaults', {}).get('deps', {}) or {}
           repo_deps = rc.get('deps', {}) or {}
           if not isinstance(default_deps, dict):
@@ -332,7 +341,17 @@ jobs:
               # requirement) re-downloads automatically. The venv (/flagos) and
               # the cache live on different filesystems, so uv must copy instead
               # of hardlink.
-              cache_env = dict(backend.get('test_env') or {})
+              backend_env = backend.get('test_env') or {}
+              if not isinstance(backend_env, dict):
+                  raise SystemExit(f'backends.{name}.test_env must be a mapping')
+              repo_backend_env = repo_test_env.get(name, {}) or {}
+              if not isinstance(repo_backend_env, dict):
+                  raise SystemExit(f'repos.{repo}.test_env.{name} must be a mapping')
+              cache_env = {
+                  **backend_env,
+                  **repo_test_env_default,
+                  **repo_backend_env,
+              }
               vendor_key = str(backend.get('vendor', '')).strip().lower()
               cache_base = str(backend.get('output_base_dir', '')).rstrip('/')
               if cache_base and vendor_key:

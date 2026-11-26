@@ -40,6 +40,10 @@ if [ -n "${GITHUB_ENV:-}" ]; then
   echo "AITER_CODE_OBJECT_VERSION=${AITER_CODE_OBJECT_VERSION}" >> "$GITHUB_ENV"
 fi
 
+# These patches are specific to FlagGems-vllm. Keep the shared Hygon hook
+# limited to its original gflags/glog and AITER settings for other repos.
+if [ "${TARGET_DIR:-}" = "FlagGems-vllm" ] || [ "${REPOSITORY_NAME:-}" = "FlagGems-vllm" ]; then
+  echo "[Install script] FlagGems-vllm: enabling DTK CUDA path and rocminfo shim"
 # FlagCX and other torch extensions need the CUDA-compatible headers and
 # libraries that ship inside the DTK tree. Export the path for source builds.
 if [ -z "${CUDA_PATH:-}" ]; then
@@ -68,4 +72,5 @@ chmod +x /usr/local/bin/rocminfo
 export PATH=/usr/local/bin:${PATH}
 if [ -n "${GITHUB_ENV:-}" ]; then
   echo "PATH=/usr/local/bin:${PATH}" >> "$GITHUB_ENV"
+fi
 fi
