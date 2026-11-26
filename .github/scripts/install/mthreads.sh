@@ -27,13 +27,6 @@ set -eo pipefail
 export no_proxy="${no_proxy:+${no_proxy},}dl.mthreads.com,localhost,127.0.0.1"
 export NO_PROXY="${NO_PROXY:+${NO_PROXY},}dl.mthreads.com,localhost,127.0.0.1"
 
-# The runtime image ships FlagCX for the old torch; suppress backend
-# autoload until post_install rebuilds it against the final torch.
-export TORCH_DEVICE_BACKEND_AUTOLOAD=0
-if [ -n "${GITHUB_ENV:-}" ]; then
-  echo "TORCH_DEVICE_BACKEND_AUTOLOAD=${TORCH_DEVICE_BACKEND_AUTOLOAD}" >> "${GITHUB_ENV}"
-fi
-
 if [ "$(id -u)" -ne 0 ]; then
   echo "[Install script] ERROR: must run as root to install system packages"
   exit 1
