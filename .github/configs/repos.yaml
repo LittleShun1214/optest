@@ -138,6 +138,7 @@ repos:
         UV_DEFAULT_INDEX: https://pypi.sourcefind.cn/nightly/dtk/
         POST_INSTALL_PROFILE: hygon-vllm
       MTT-S5000:
+        POST_INSTALL_PROFILE: musa-vllm
         VLLM_PLUGINS: musa
     container_images:
       BW1000: harbor.baai.ac.cn/flagos-runtime/flagos-runtime-hygon-dtk26.10:2.3.0
